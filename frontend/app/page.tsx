@@ -167,6 +167,9 @@ export default function Home() {
         const msg: WSMessage = JSON.parse(e.data);
         if (msg.type === 'order_update') {
           const updated = msg.payload as OrderDetail;
+          if (updated && !updated.screenshots) {
+            updated.screenshots = [];
+          }
           setOrder(prev => {
             if (prev && (prev.status !== updated.status || prev.notes !== updated.notes)) {
               const desc = `Status: ${STATUS_LABEL[updated.status] || updated.status}${updated.notes ? ' · ' + updated.notes : ''}`;
@@ -186,7 +189,8 @@ export default function Home() {
                 `Admin baru saja mengunggah bukti screenshot untuk joki kamu.`
               );
               showLiveToast("📸 Bukti Pengerjaan Baru!", "Admin baru saja mengunggah screenshot live terbaru.", 'screenshot');
-              return { ...prev, screenshots: [...prev.screenshots, ss] };
+              const currentSS = prev.screenshots || [];
+              return { ...prev, screenshots: [...currentSS, ss] };
             }
             return prev;
           });
@@ -218,6 +222,10 @@ export default function Home() {
         setPhase('login');
         localStorage.removeItem('joki_passcode');
         return;
+      }
+
+      if (data && !data.screenshots) {
+        data.screenshots = [];
       }
 
       setPasscode(code);
@@ -296,6 +304,8 @@ export default function Home() {
 
   // ── RENDER: Dashboard ──
   if (!order) return null;
+
+  const screenshots = order.screenshots || [];
 
   return (
     <>
@@ -386,17 +396,17 @@ export default function Home() {
         <div className="glass gallery-card">
           <div className="gallery-header">
             <h3>Screenshot Bukti Joki</h3>
-            {order.screenshots.length > 0 && (
+            {screenshots.length > 0 && (
               <span className="live-badge" style={{ marginLeft: 8 }}>
-                <span className="live-dot" />{order.screenshots.length} foto
+                <span className="live-dot" />{screenshots.length} foto
               </span>
             )}
           </div>
-          {order.screenshots.length === 0
+          {screenshots.length === 0
             ? <div className="gallery-empty">📸 Belum ada screenshot. Foto akan muncul saat admin sedang mengerjakan.</div>
             : (
               <div className="gallery-grid">
-                {order.screenshots.map(ss => (
+                {screenshots.map(ss => (
                   <div
                     key={ss.id}
                     className="gallery-item"
