@@ -108,32 +108,68 @@ export default function Home() {
   const [notifPermission, setNotifPermission] = useState<string>('default');
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      setNotifPermission(Notification.permission);
+    try {
+      if (typeof window !== 'undefined' && 'Notification' in window) {
+        setNotifPermission(Notification.permission);
+      }
+    } catch (err) {
+      console.warn('Notification API access blocked or unsupported');
     }
   }, []);
 
   async function requestNotif() {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      const p = await Notification.requestPermission();
-      setNotifPermission(p);
-      if (p === 'granted') {
-        new Notification("Joki Roblox", {
-          body: "Notifikasi live aktif! Kami akan mengabarimu setiap ada perubahan.",
-          icon: avatarUrl && avatarUrl !== 'loading' && avatarUrl !== 'nofoto' ? avatarUrl : '/favicon.ico',
-          tag: 'joki-roblox-setup'
-        });
+    try {
+      if (typeof window !== 'undefined' && 'Notification' in window) {
+        const p = await Notification.requestPermission();
+        setNotifPermission(p);
+        if (p === 'granted') {
+          // Android Chrome throws Illegal Constructor for new Notification, use ServiceWorker if available
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.ready.then(sw => {
+              sw.showNotification("Joki Roblox", {
+                body: "Notifikasi live aktif! Kami akan mengabarimu setiap ada perubahan.",
+                icon: avatarUrl && avatarUrl !== 'loading' && avatarUrl !== 'nofoto' ? avatarUrl : '/favicon.ico',
+                tag: 'joki-roblox-setup'
+              });
+            }).catch(() => fallbackNotif("Joki Roblox", "Notifikasi live aktif!"));
+          } else {
+            fallbackNotif("Joki Roblox", "Notifikasi live aktif!");
+          }
+        }
       }
+    } catch (err) {
+      console.warn('Gagal meminta izin notifikasi:', err);
+    }
+  }
+
+  function fallbackNotif(title: string, body: string) {
+    try {
+      new Notification(title, {
+        body: body,
+        icon: avatarUrl && avatarUrl !== 'loading' && avatarUrl !== 'nofoto' ? avatarUrl : '/favicon.ico',
+      });
+    } catch (e) {
+      console.warn('Fallback Notification error:', e);
     }
   }
 
   function triggerNotification(title: string, body: string) {
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      new Notification(title, {
-        body: body,
-        icon: avatarUrl && avatarUrl !== 'loading' && avatarUrl !== 'nofoto' ? avatarUrl : '/favicon.ico',
-        tag: 'joki-roblox-update'
-      });
+    try {
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.ready.then(sw => {
+            sw.showNotification(title, {
+              body: body,
+              icon: avatarUrl && avatarUrl !== 'loading' && avatarUrl !== 'nofoto' ? avatarUrl : '/favicon.ico',
+              tag: 'joki-roblox-update'
+            });
+          }).catch(() => fallbackNotif(title, body));
+        } else {
+          fallbackNotif(title, body);
+        }
+      }
+    } catch (err) {
+      console.warn('Gagal memicu notifikasi:', err);
     }
   }
 
