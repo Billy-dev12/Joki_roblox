@@ -74,7 +74,19 @@ func main() {
 	// Saat frontend sudah di-build, file akan tersimpan di ./frontend/out/
 	frontendPath := "./frontend/out"
 	if _, err := os.Stat(frontendPath); err == nil {
-		mux.Handle("/", http.FileServer(http.Dir(frontendPath)))
+		fileServer := http.FileServer(http.Dir(frontendPath))
+		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Cegah cache untuk halaman utama (HTML) agar setiap ada update kode langsung berubah
+			if r.URL.Path == "/" || strings.HasSuffix(r.URL.Path, ".html") {
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				w.Header().Set("Pragma", "no-cache")
+				w.Header().Set("Expires", "0")
+			} else if strings.HasPrefix(r.URL.Path, "/_next/static/") {
+				// File JS/CSS build dari Next.js aman di-cache lama
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
+			fileServer.ServeHTTP(w, r)
+		}))
 		log.Printf("[Server] Menyajikan frontend dari: %s", frontendPath)
 	} else {
 		// Fallback: tampilkan halaman sementara jika frontend belum di-build
