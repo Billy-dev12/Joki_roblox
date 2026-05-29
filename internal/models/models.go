@@ -80,3 +80,23 @@ type UpdateStatusRequest struct {
 	Status   OrderStatus `json:"status"`
 	Notes    string      `json:"notes"`
 }
+
+// PushSubscription merepresentasikan detail langganan push dari browser
+type PushSubscription struct {
+	ID        int       `json:"id"`
+	OrderID   int       `json:"order_id"`
+	Endpoint  string    `json:"endpoint"`
+	P256dh    string    `json:"p256dh"`
+	Auth      string    `json:"auth"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// SaveSubscriptionRequest adalah payload POST /api/save-subscription
+type SaveSubscriptionRequest struct {
+	Passcode string `json:"passcode"`
+	Endpoint string `json:"endpoint"`
+	Keys     struct {
+		P256dh string `json:"p256dh"`
+		Auth   string `json:"auth"`
+	} `json:"keys"`
+}

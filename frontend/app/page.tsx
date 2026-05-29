@@ -105,6 +105,15 @@ export default function Home() {
     }
   }, []);
 
+  // Register Service Worker on mount
+  useEffect(() => {
+    if ('serviceWorker' in navigator && typeof window !== 'undefined') {
+      navigator.serviceWorker.register('/sw.js')
+        .then(reg => console.log('Service Worker registered:', reg.scope))
+        .catch(err => console.error('Service Worker registration failed:', err));
+    }
+  }, []);
+
   const [notifPermission, setNotifPermission] = useState<string>('default');
 
   useEffect(() => {
@@ -117,24 +126,71 @@ export default function Home() {
     }
   }, []);
 
+  // Helper to convert base64 VAPID key to Uint8Array for browser push manager
+  function urlBase64ToUint8Array(base64String: string) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding)
+      .replace(/\-/g, '+')
+      .replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  }
+
+  async function setupPushSubscription(code: string) {
+    try {
+      if (!code) return;
+      const api = getApiUrl();
+      // 1. Ambil VAPID Public Key dari server
+      const keyRes = await fetch(`${api}/api/vapid-public-key`);
+      const keyData = await keyRes.json();
+      if (!keyData.public_key) {
+        console.warn("VAPID Public Key tidak ditemukan dari server");
+        return;
+      }
+
+      // 2. Hubungkan ke Service Worker
+      const reg = await navigator.serviceWorker.ready;
+      
+      // 3. Daftarkan langganan push ke push manager browser
+      const convertedKey = urlBase64ToUint8Array(keyData.public_key);
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: convertedKey
+      });
+
+      // 4. Kirim Subscription Object ke server Go
+      const subObj = JSON.parse(JSON.stringify(sub));
+      await fetch(`${api}/api/save-subscription`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          passcode: code,
+          endpoint: subObj.endpoint,
+          keys: {
+            p256dh: subObj.keys.p256dh,
+            auth: subObj.keys.auth
+          }
+        })
+      });
+      
+      console.log("Web Push didaftarkan secara sukses!");
+    } catch (err) {
+      console.error("Gagal mendaftarkan Web Push:", err);
+    }
+  }
+
   async function requestNotif() {
     try {
       if (typeof window !== 'undefined' && 'Notification' in window) {
         const p = await Notification.requestPermission();
         setNotifPermission(p);
         if (p === 'granted') {
-          // Android Chrome throws Illegal Constructor for new Notification, use ServiceWorker if available
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.ready.then(sw => {
-              sw.showNotification("Joki Roblox", {
-                body: "Notifikasi live aktif! Kami akan mengabarimu setiap ada perubahan.",
-                icon: avatarUrl && avatarUrl !== 'loading' && avatarUrl !== 'nofoto' ? avatarUrl : '/favicon.ico',
-                tag: 'joki-roblox-setup'
-              });
-            }).catch(() => fallbackNotif("Joki Roblox", "Notifikasi live aktif!"));
-          } else {
-            fallbackNotif("Joki Roblox", "Notifikasi live aktif!");
-          }
+          const code = passcode || localStorage.getItem('joki_passcode') || '';
+          await setupPushSubscription(code);
         }
       }
     } catch (err) {
@@ -271,6 +327,13 @@ export default function Home() {
       setPhase('dashboard');
       fetchAvatar(data.roblox_username);
       connectWS(code);
+
+      // Auto-subscribe push jika izin notifikasi sudah disetujui sebelumnya
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        setTimeout(() => {
+          setupPushSubscription(code);
+        }, 1000);
+      }
     } catch {
       if (!isAuto) {
         setError('Tidak bisa terhubung ke server. Coba lagi.');

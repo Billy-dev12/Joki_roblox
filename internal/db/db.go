@@ -70,9 +70,18 @@ func (db *DB) migrate() error {
 			filename   TEXT    NOT NULL,
 			created_at DATETIME NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS push_subscriptions (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			order_id   INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+			endpoint   TEXT    NOT NULL UNIQUE,
+			p256dh     TEXT    NOT NULL,
+			auth       TEXT    NOT NULL,
+			created_at DATETIME NOT NULL
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_orders_passcode ON orders(passcode)`,
 		`CREATE INDEX IF NOT EXISTS idx_orders_username ON orders(roblox_username)`,
 		`CREATE INDEX IF NOT EXISTS idx_screenshots_order_id ON screenshots(order_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_order ON push_subscriptions(order_id)`,
 	}
 
 	for _, q := range queries {
@@ -310,4 +319,56 @@ func (db *DB) GetOrderIDByPasscode(passcode string) (int, error) {
 		return 0, fmt.Errorf("order dengan passcode '%s' tidak ditemukan", passcode)
 	}
 	return id, err
+}
+
+// =====================
+// PUSH SUBSCRIPTION
+// =====================
+
+// AddSubscription menyimpan detail langganan push baru ke database,
+// atau memperbaruinya jika endpoint yang sama sudah terdaftar
+func (db *DB) AddSubscription(orderID int, endpoint, p256dh, auth string) error {
+	now := time.Now()
+	_, err := db.conn.Exec(
+		`INSERT OR REPLACE INTO push_subscriptions (order_id, endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?, ?)`,
+		orderID,
+		endpoint,
+		p256dh,
+		auth,
+		now.Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("gagal menyimpan push subscription: %w", err)
+	}
+	return nil
+}
+
+// GetSubscriptionsByOrderID mengambil semua push subscription berdasarkan ID order
+func (db *DB) GetSubscriptionsByOrderID(orderID int) ([]models.PushSubscription, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, order_id, endpoint, p256dh, auth, created_at FROM push_subscriptions WHERE order_id = ?`,
+		orderID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("gagal mengambil push subscriptions: %w", err)
+	}
+	defer rows.Close()
+
+	var subs []models.PushSubscription
+	for rows.Next() {
+		var sub models.PushSubscription
+		var createdAt string
+		if err := rows.Scan(&sub.ID, &sub.OrderID, &sub.Endpoint, &sub.P256dh, &sub.Auth, &createdAt); err != nil {
+			return nil, err
+		}
+		sub.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		subs = append(subs, sub)
+	}
+	return subs, nil
+}
+
+// DeleteSubscriptionByEndpoint menghapus token push yang sudah tidak valid / kedaluwarsa
+func (db *DB) DeleteSubscriptionByEndpoint(endpoint string) error {
+	_, err := db.conn.Exec(`DELETE FROM push_subscriptions WHERE endpoint = ?`, endpoint)
+	return err
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
+	"github.com/SherClockHolmes/webpush-go"
 )
 
 // =====================
@@ -25,9 +26,11 @@ import (
 // =====================
 
 var (
-	database      *db.DB
-	hub           *ws.Hub
-	adminPassword string
+	database        *db.DB
+	hub             *ws.Hub
+	adminPassword   string
+	vapidPublicKey  string
+	vapidPrivateKey string
 )
 
 var upgrader = websocket.Upgrader{
@@ -49,6 +52,26 @@ func main() {
 	dbPath := getEnv("DB_PATH", "./joki.db")
 	adminPassword = getEnv("ADMIN_PASSWORD", "admin123")
 	uploadsDir := "./public/uploads"
+
+	// Load atau generate VAPID keys untuk Web Push
+	vapidPublicKey = getEnv("VAPID_PUBLIC_KEY", "")
+	vapidPrivateKey = getEnv("VAPID_PRIVATE_KEY", "")
+	if vapidPublicKey == "" || vapidPrivateKey == "" {
+		log.Println("[WebPush] VAPID keys tidak ditemukan di .env. Membuat key baru...")
+		pub, priv, err := webpush.GenerateVAPIDKeys()
+		if err != nil {
+			log.Printf("[WebPush] Gagal generate VAPID keys: %v", err)
+		} else {
+			vapidPublicKey = pub
+			vapidPrivateKey = priv
+			log.Println("[WebPush] ==========================================================")
+			log.Println("[WebPush] BERHASIL GENERATE VAPID KEYS!")
+			log.Printf("[WebPush] VAPID_PUBLIC_KEY  = %s", vapidPublicKey)
+			log.Printf("[WebPush] VAPID_PRIVATE_KEY = %s", vapidPrivateKey)
+			log.Println("[WebPush] Silakan simpan key di atas ke file .env VPS/Server Anda!")
+			log.Println("[WebPush] ==========================================================")
+		}
+	}
 
 	// Inisialisasi database
 	var err error
@@ -99,6 +122,8 @@ func main() {
 	// --- Endpoint Pelanggan (Public) ---
 	mux.HandleFunc("/api/order", handlerGetOrder)       // GET /api/order?passcode=BJ-1234
 	mux.HandleFunc("/api/roblox-avatar", handlerRobloxAvatar) // GET /api/roblox-avatar?username=evosterbaik
+	mux.HandleFunc("/api/vapid-public-key", handlerVapidPublicKey) // GET /api/vapid-public-key
+	mux.HandleFunc("/api/save-subscription", handlerSaveSubscription) // POST /api/save-subscription
 	mux.HandleFunc("/ws", handlerWebSocket)             // GET /ws?passcode=BJ-1234
 
 	// --- Endpoint Admin (Protected) ---
@@ -377,6 +402,20 @@ func handlerAdminUpdateStatus(w http.ResponseWriter, r *http.Request) {
 			Type:    "order_update",
 			Payload: detail,
 		})
+
+		// Kirim push notification ke HP/browser latar belakang
+		statusLabel := map[models.OrderStatus]string{
+			models.StatusPending:    "Menunggu Pengerjaan",
+			models.StatusQueued:     "Masuk Antrean",
+			models.StatusInProgress: "Sedang Diproses",
+			models.StatusCompleted:  "Selesai!",
+		}
+		title := "Update Joki: " + detail.RobloxUsername
+		body := "Status joki berubah menjadi " + statusLabel[detail.Status]
+		if req.Notes != "" {
+			body += " · " + req.Notes
+		}
+		sendWebPush(detail.ID, title, body)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]string{
@@ -460,6 +499,14 @@ func handlerAdminUpload(w http.ResponseWriter, r *http.Request) {
 		Type:    "new_screenshot",
 		Payload: screenshot,
 	})
+
+	// Kirim push notification ke HP/browser latar belakang
+	orderDetail, _ := database.GetOrderByPasscode(passcode)
+	if orderDetail != nil {
+		title := "Screenshot Baru! 📸"
+		body := fmt.Sprintf("Admin baru saja mengunggah screenshot live terbaru untuk joki %s.", orderDetail.RobloxUsername)
+		sendWebPush(orderDetail.ID, title, body)
+	}
 
 	log.Printf("[Upload] Screenshot baru: %s untuk passcode: %s", filename, passcode)
 
@@ -730,4 +777,109 @@ func fetchRobloxAvatarURL(userID int64) (string, error) {
 	}
 
 	return result.Data[0].ImageURL, nil
+}
+
+// handlerVapidPublicKey mengembalikan VAPID public key untuk frontend browser
+// GET /api/vapid-public-key
+func handlerVapidPublicKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method tidak diizinkan"})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"public_key": vapidPublicKey})
+}
+
+// handlerSaveSubscription menyimpan detail langganan push dari browser pelanggan
+// POST /api/save-subscription
+func handlerSaveSubscription(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method tidak diizinkan"})
+		return
+	}
+
+	var req models.SaveSubscriptionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Format body tidak valid"})
+		return
+	}
+
+	if req.Passcode == "" || req.Endpoint == "" || req.Keys.P256dh == "" || req.Keys.Auth == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Field passcode, endpoint, p256dh, dan auth wajib diisi"})
+		return
+	}
+
+	// Cari order ID berdasarkan passcode
+	orderID, err := database.GetOrderIDByPasscode(req.Passcode)
+	if err != nil {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "Passcode tidak ditemukan"})
+		return
+	}
+
+	// Simpan ke database
+	err = database.AddSubscription(orderID, req.Endpoint, req.Keys.P256dh, req.Keys.Auth)
+	if err != nil {
+		log.Printf("[WebPush] Gagal menyimpan subscription ke DB: %v", err)
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "Gagal menyimpan subscription"})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]string{"message": "Subscription berhasil didaftarkan!"})
+}
+
+// sendWebPush mengirimkan push notification native ke semua HP/browser yang terdaftar untuk orderID tersebut
+func sendWebPush(orderID int, title, body string) {
+	if vapidPublicKey == "" || vapidPrivateKey == "" {
+		log.Println("[WebPush] VAPID keys kosong, tidak dapat mengirim notifikasi push.")
+		return
+	}
+
+	subs, err := database.GetSubscriptionsByOrderID(orderID)
+	if err != nil {
+		log.Printf("[WebPush] Gagal mengambil subscription dari DB untuk order %d: %v", orderID, err)
+		return
+	}
+
+	if len(subs) == 0 {
+		return
+	}
+
+	log.Printf("[WebPush] Mengirim notifikasi push ke %d device untuk order %d...", len(subs), orderID)
+
+	payload, err := json.Marshal(map[string]string{
+		"title": title,
+		"body":  body,
+	})
+	if err != nil {
+		log.Printf("[WebPush] Gagal encode payload push: %v", err)
+		return
+	}
+
+	for _, sub := range subs {
+		s := &webpush.Subscription{
+			Endpoint: sub.Endpoint,
+			Keys: webpush.Keys{
+				P256dh: sub.P256dh,
+				Auth:   sub.Auth,
+			},
+		}
+
+		go func(subObj *webpush.Subscription, endpointStr string) {
+			resp, err := webpush.SendNotification(payload, subObj, &webpush.Options{
+				Subscriber:      "mailto:billystorepanel@gmail.com",
+				VAPIDPublicKey:  vapidPublicKey,
+				VAPIDPrivateKey: vapidPrivateKey,
+				TTL:             86400, // 24 jam
+			})
+			if err != nil {
+				log.Printf("[WebPush] Gagal kirim push ke %s: %v", endpointStr, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusNotFound {
+				log.Printf("[WebPush] Device %s sudah tidak aktif (status %d), menghapus subscription...", endpointStr, resp.StatusCode)
+				database.DeleteSubscriptionByEndpoint(endpointStr)
+			}
+		}(s, sub.Endpoint)
+	}
 }
