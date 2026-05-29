@@ -93,6 +93,8 @@ func main() {
 	mux.HandleFunc("/api/admin/login", handlerAdminLogin)     // POST /api/admin/login
 	mux.HandleFunc("/api/admin/logout", handlerAdminLogout)   // POST /api/admin/logout
 	mux.HandleFunc("/api/admin/orders", adminMiddleware(handlerAdminListOrders)) // GET  /api/admin/orders
+	mux.HandleFunc("/api/admin/orders/create", adminMiddleware(handlerAdminCreateOrder)) // POST /api/admin/orders/create
+	mux.HandleFunc("/api/admin/orders/delete", adminMiddleware(handlerAdminDeleteOrder)) // POST /api/admin/orders/delete
 	mux.HandleFunc("/api/admin/status", adminMiddleware(handlerAdminUpdateStatus)) // POST /api/admin/status
 	mux.HandleFunc("/api/admin/upload", adminMiddleware(handlerAdminUpload))     // POST /api/admin/upload
 
@@ -122,7 +124,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Cookie")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Cookie, X-Admin-Password")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -131,17 +133,26 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// adminMiddleware memvalidasi token admin dari cookie sebelum mengizinkan akses
+// adminMiddleware memvalidasi token admin dari cookie (web) ATAU password dari header X-Admin-Password (CLI)
 func adminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// 1. Cek Cookie admin_token (untuk Web Admin)
 		cookie, err := r.Cookie("admin_token")
-		if err != nil || cookie.Value != generateAdminToken() {
-			respondJSON(w, http.StatusUnauthorized, map[string]string{
-				"error": "Akses ditolak. Silakan login sebagai admin terlebih dahulu.",
-			})
+		if err == nil && cookie.Value == generateAdminToken() {
+			next(w, r)
 			return
 		}
-		next(w, r)
+
+		// 2. Cek Header X-Admin-Password (untuk CLI Lokal Laptop)
+		cliPass := r.Header.Get("X-Admin-Password")
+		if cliPass != "" && cliPass == adminPassword {
+			next(w, r)
+			return
+		}
+
+		respondJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "Akses ditolak. Token tidak valid atau password salah.",
+		})
 	}
 }
 
@@ -444,6 +455,100 @@ func handlerAdminUpload(w http.ResponseWriter, r *http.Request) {
 		"message":    "Screenshot berhasil diunggah!",
 		"screenshot": screenshot,
 	})
+}
+
+// handlerAdminCreateOrder membuat order baru secara remote dari CLI
+// POST /api/admin/orders/create
+func handlerAdminCreateOrder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method tidak diizinkan"})
+		return
+	}
+
+	var req struct {
+		RobloxUsername string `json:"roblox_username"`
+		PackageName    string `json:"package_name"`
+		Price          int    `json:"price"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Format body tidak valid"})
+		return
+	}
+
+	if req.RobloxUsername == "" || req.PackageName == "" || req.Price <= 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Field 'roblox_username', 'package_name', dan 'price' wajib diisi dengan benar"})
+		return
+	}
+
+	// Buat passcode acak
+	passcode := generatePasscode()
+
+	order := &models.Order{
+		Passcode:       passcode,
+		RobloxUsername: req.RobloxUsername,
+		PackageName:    models.PackageName(req.PackageName),
+		Status:         models.StatusPending,
+		Price:          req.Price,
+	}
+
+	if err := database.CreateOrder(order); err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("Gagal membuat order: %v", err)})
+		return
+	}
+
+	log.Printf("[Server] Order baru dibuat secara remote: %s untuk %s", passcode, req.RobloxUsername)
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "Order berhasil dibuat!",
+		"order":   order,
+	})
+}
+
+// handlerAdminDeleteOrder menghapus order berdasarkan passcode secara remote dari CLI
+// POST /api/admin/orders/delete
+func handlerAdminDeleteOrder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method tidak diizinkan"})
+		return
+	}
+
+	var req struct {
+		Passcode string `json:"passcode"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Format body tidak valid"})
+		return
+	}
+
+	if req.Passcode == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Field 'passcode' wajib diisi"})
+		return
+	}
+
+	if err := database.DeleteOrder(req.Passcode); err != nil {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	log.Printf("[Server] Order %s berhasil dihapus secara remote", req.Passcode)
+
+	respondJSON(w, http.StatusOK, map[string]string{
+		"message": fmt.Sprintf("Order %s berhasil dihapus!", req.Passcode),
+	})
+}
+
+// generatePasscode membuat kode unik acak dalam format BJ-XXXX
+func generatePasscode() string {
+	seed := time.Now().UnixNano()
+	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // Hindari 0,O,I,1 yang mudah tertukar
+	code := make([]byte, 4)
+	for i := range code {
+		seed = (seed*1103515245 + 12345) & 0x7fffffff
+		code[i] = chars[seed%int64(len(chars))]
+	}
+	return fmt.Sprintf("BJ-%s", string(code))
 }
 
 // =====================

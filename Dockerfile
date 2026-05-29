@@ -18,7 +18,7 @@ RUN npm run build
 # ========================================================
 # STAGE 2: Build executable Go Server (CGO-free)
 # ========================================================
-FROM golang:1.22-alpine AS backend-builder
+FROM golang:1.26-alpine AS backend-builder
 WORKDIR /app
 
 # Download Go dependencies
