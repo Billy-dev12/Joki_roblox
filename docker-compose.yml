@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  joki-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: joki_roblox_app
+    restart: always
+    ports:
+      - "3434:8080" # Map port host 3434 ke port container 8080 (sesuai permintaan Anda!)
+    environment:
+      - PORT=8080
+      - DB_PATH=/app/data/joki.db # Simpan database ke dalam volume agar persisten
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD} # Mengambil sandi secara otomatis dari file .env lokal (Aman untuk Git!)
+    volumes:
+      - ./data:/app/data # Menyimpan file joki.db di folder host ./data agar tidak hilang saat container restart
+      - ./public/uploads:/app/public/uploads # Menyimpan gambar screenshot yang di-upload agar aman di folder host

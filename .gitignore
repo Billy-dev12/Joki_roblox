@@ -1,0 +1,35 @@
+# ========================================================
+# 🔒 SENSITIVE DATA & CREDENTIALS (SANGAT KRUSIAL!)
+# ========================================================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ========================================================
+# 🗄️ DATABASE & STORAGE (SQLite & Uploads)
+# ========================================================
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+data/
+public/uploads/
+
+# ========================================================
+# 📦 DEPENDENCIES & BUILD OUTPUTS (Next.js & Node)
+# ========================================================
+node_modules/
+/frontend/node_modules/
+/frontend/.next/
+/frontend/out/
+
+# ========================================================
+# 🔨 SYSTEM FILES
+# ========================================================
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Thumbs.db
+*.log
